@@ -435,7 +435,7 @@
 // Uses Google Identity Services' own remembered-session behavior (silent
 // auto_select on repeat visits from the same browser/device) rather than a
 // custom persisted flag -- nothing here needs to manage session expiry.
-const ALLOWED_EMAIL_DOMAIN = 'kchva.com';
+const ALLOWED_EMAIL_DOMAINS = ['kchva.com', 'urbancoreva.com'];
 function decodeJwt(token) {
   const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
   const json = decodeURIComponent(atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
@@ -451,8 +451,8 @@ function handleCredentialResponse(response) {
   try { payload = decodeJwt(response.credential); } catch (e) { showAuthError('Could not read the sign-in response — please try again.'); return; }
   const email = (payload.email || '').toLowerCase();
   const domain = email.split('@')[1] || '';
-  if (!payload.email_verified || domain !== ALLOWED_EMAIL_DOMAIN) {
-    showAuthError('Access is restricted to @' + ALLOWED_EMAIL_DOMAIN + ' accounts (signed in as ' + (payload.email || 'unknown') + ').');
+  if (!payload.email_verified || !ALLOWED_EMAIL_DOMAINS.includes(domain)) {
+    showAuthError('Access is restricted to @' + ALLOWED_EMAIL_DOMAINS.join(' or @') + ' accounts (signed in as ' + (payload.email || 'unknown') + ').');
     if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
     return;
   }
