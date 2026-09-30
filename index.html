@@ -75,6 +75,25 @@
 
   .action-bar { background: var(--card); border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow); padding: 14px 20px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 
+  /* ── AI Import card ── */
+  .ai-import-card { background: linear-gradient(135deg, var(--gold-pale), var(--card)); border: 1px solid var(--gold); }
+  .ai-paste-zone { min-height: 84px; max-height: 260px; overflow-y: auto; border: 2px dashed var(--border-dk); border-radius: 8px; padding: 12px 14px; font-size: 13px; color: var(--text); background: #fff; cursor: text; transition: border-color .12s, background .12s; }
+  .ai-paste-zone:focus { outline: none; border-color: var(--gold); background: #fffdf5; }
+  .ai-paste-zone.drag-over { border-color: var(--gold-dk); background: var(--gold-pale); }
+  .ai-paste-zone:empty::before { content: attr(data-placeholder); color: #94a3b8; }
+  .ai-paste-zone img { max-width: 100%; max-height: 200px; display: block; margin: 4px 0; border-radius: 4px; }
+  .ai-status { font-size: 12px; color: var(--muted); }
+  .ai-status.error { color: #9f1239; }
+  .ai-results { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .ai-results.hidden { display: none; }
+  .ai-summary { font-size: 12.5px; color: var(--sub); margin-bottom: 10px; font-style: italic; }
+  .ai-field-list { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; }
+  @media (max-width: 600px) { .ai-field-list { grid-template-columns: 1fr; } }
+  .ai-field-row { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 0; cursor: pointer; }
+  .ai-field-row span { flex: 1; color: var(--sub); }
+  .ai-field-row strong { font-variant-numeric: tabular-nums; }
+  .ai-signin-note { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
+
   .plan-bar { background: var(--card); border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow); padding: 12px 20px; display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
   .plan-bar label { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; }
   .plan-select { height: 34px; min-width: 170px; cursor: pointer; }
@@ -226,6 +245,17 @@
 
   <!-- ═══════════════ INPUT PANEL ═══════════════ -->
   <div id="panel-input">
+
+    <div class="card ai-import-card">
+      <div class="section-label">AI Import <span>beta — paste a photo or text and it'll pull the numbers out for you</span></div>
+      <div id="ai-paste-zone" class="ai-paste-zone" contenteditable="true" data-placeholder="Click here, then paste (Ctrl+V) a photo or some text…"></div>
+      <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
+        <button type="button" id="btn-ai-extract" class="btn-go" disabled>Extract →</button>
+        <button type="button" id="btn-ai-clear" class="btn-ghost">Clear</button>
+        <span id="ai-status" class="ai-status"></span>
+      </div>
+      <div id="ai-results" class="ai-results hidden"></div>
+    </div>
 
     <div class="plan-bar">
       <label for="plan-select">Load Base Plan:</label>
@@ -421,6 +451,11 @@ function handleCredentialResponse(response) {
   document.getElementById('app-content').classList.remove('hidden');
   const who = document.getElementById('auth-whoami');
   if (who) who.textContent = payload.email;
+  // Stashed for the AI Import card -- the parse-estimate-input function
+  // re-verifies this token itself server-side, so this client-side check
+  // is just for the UI; it's not the thing standing between a stray
+  // request and the OpenAI bill.
+  window.currentGoogleIdToken = response.credential;
 }
 function signOut() {
   if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
@@ -671,6 +706,132 @@ function showStatus(msg, type) {
   const el = $('status');
   el.textContent = msg;
   el.className = 'status show ' + (type || 'info');
+}
+
+// ═══════════════════════════════════════════════════════════
+// AI Import -- paste a photo and/or text, a Supabase Edge Function
+// (parse-estimate-input) reads it via OpenAI and hands back only the
+// known measurement fields it's confident about. The OpenAI key never
+// reaches this page -- it lives in that function's own secret. The
+// Google ID token captured at sign-in (see handleCredentialResponse,
+// above the app's own script block) is sent along and re-verified
+// server-side, since the sign-in gate here is only a client-side check.
+// ═══════════════════════════════════════════════════════════
+const AI_FIELD_LABELS = {
+  floor1_sf: '1st Floor (SF)', floor2_sf: '2nd Floor (SF)', floor3_sf: '3rd Floor (SF)',
+  attic_storage_sf: 'Attic w/ Storage (SF)', habitable_attic_sf: 'Habitable Attic (SF)',
+  front_porch_sf: 'Front Porch (SF)', rear_porch_sf: 'Rear Porch (SF)', rear_deck_sf: 'Rear Deck (SF)',
+  garage_sf: 'Garage (SF)', cabinets_lf: 'Cabinets (LF)', countertop_lf: 'Countertops (LF)',
+  exterior_doors: '# Exterior Doors', windows: '# Windows', baths: '# Baths', staircases: '# Staircases',
+  porch_columns: '# Porch Columns', garage_doors: '# Garage Doors', interior_doors: '# Interior Doors',
+  carpet_sf: 'SF Carpet', hardwood_sf: 'SF Hardwood', tile_sf: 'SF Tile'
+};
+const aiPasteZone = $('ai-paste-zone');
+const btnAiExtract = $('btn-ai-extract');
+
+function aiZoneHasContent() {
+  return aiPasteZone.textContent.trim().length > 0 || !!aiPasteZone.querySelector('img');
+}
+function updateAiExtractButtonState() { btnAiExtract.disabled = !aiZoneHasContent(); }
+aiPasteZone.addEventListener('input', updateAiExtractButtonState);
+aiPasteZone.addEventListener('paste', () => setTimeout(updateAiExtractButtonState, 0));
+aiPasteZone.addEventListener('dragover', (e) => { e.preventDefault(); aiPasteZone.classList.add('drag-over'); });
+aiPasteZone.addEventListener('dragleave', () => aiPasteZone.classList.remove('drag-over'));
+aiPasteZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  aiPasteZone.classList.remove('drag-over');
+  const file = (e.dataTransfer.files || [])[0];
+  if (file && file.type.startsWith('image/')) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = document.createElement('img');
+      img.src = reader.result;
+      aiPasteZone.appendChild(img);
+      updateAiExtractButtonState();
+    };
+    reader.readAsDataURL(file);
+  }
+});
+$('btn-ai-clear').addEventListener('click', () => {
+  aiPasteZone.innerHTML = '';
+  $('ai-results').classList.add('hidden');
+  $('ai-results').innerHTML = '';
+  $('ai-status').textContent = '';
+  updateAiExtractButtonState();
+});
+
+async function extractFromPasteZone() {
+  const img = aiPasteZone.querySelector('img');
+  const imageDataUrl = img ? img.src : '';
+  const clone = aiPasteZone.cloneNode(true);
+  clone.querySelectorAll('img').forEach(i => i.remove());
+  const text = (clone.innerText || clone.textContent || '').trim();
+  if (!text && !imageDataUrl) return;
+
+  btnAiExtract.disabled = true;
+  btnAiExtract.textContent = 'Reading…';
+  const statusEl = $('ai-status');
+  statusEl.textContent = '';
+  statusEl.className = 'ai-status';
+  try {
+    const res = await fetch(SUPABASE_URL + '/functions/v1/parse-estimate-input', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken: window.currentGoogleIdToken || '', text, imageDataUrl })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('Request failed (' + res.status + ')'));
+    renderAiResults(data.fields || {}, data.summary || '');
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.className = 'ai-status error';
+  } finally {
+    btnAiExtract.disabled = !aiZoneHasContent();
+    btnAiExtract.textContent = 'Extract →';
+  }
+}
+btnAiExtract.addEventListener('click', extractFromPasteZone);
+
+function renderAiResults(fields, summary) {
+  const wrap = $('ai-results');
+  const keys = Object.keys(fields);
+  if (!keys.length) {
+    wrap.innerHTML = `<p class="ai-summary">${summary || 'Nothing usable was found in that.'}</p>`;
+    wrap.classList.remove('hidden');
+    return;
+  }
+  wrap.innerHTML = `
+    <p class="ai-summary">${summary}</p>
+    <div class="ai-field-list">
+      ${keys.map(k => `
+        <label class="ai-field-row">
+          <input type="checkbox" checked data-key="${k}">
+          <span>${AI_FIELD_LABELS[k] || k}</span>
+          <strong>${fields[k]}</strong>
+        </label>
+      `).join('')}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px;">
+      <button type="button" class="btn-go" id="btn-ai-apply">Apply to Form</button>
+      <button type="button" class="btn-ghost" id="btn-ai-discard">Discard</button>
+    </div>
+  `;
+  wrap.classList.remove('hidden');
+  $('btn-ai-apply').addEventListener('click', () => {
+    let count = 0;
+    wrap.querySelectorAll('input[type=checkbox]:checked').forEach(chk => {
+      const key = chk.dataset.key;
+      const el = document.querySelector(`.jq-input[data-field="${key}"]`);
+      if (el) { el.value = fields[key]; count++; }
+    });
+    saveInputsToStorage();
+    aiPasteZone.innerHTML = '';
+    wrap.classList.add('hidden');
+    wrap.innerHTML = '';
+    updateAiExtractButtonState();
+    showStatus('✓ Applied ' + count + ' AI-extracted value(s) to the form.', 'success');
+  });
+  $('btn-ai-discard').addEventListener('click', () => { wrap.classList.add('hidden'); wrap.innerHTML = ''; });
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────
