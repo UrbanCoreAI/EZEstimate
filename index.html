@@ -273,6 +273,7 @@
         <option value="">— Select a plan —</option>
       </select>
       <span id="plan-status" class="plan-status hidden"></span>
+      <button type="button" id="btn-clear-top" class="btn-ghost" style="margin-left:auto;">Clear Inputs</button>
     </div>
 
     <div class="form-grid">
@@ -386,7 +387,7 @@
         Preferred Lender Incentive
       </label>
       <button id="btn-write-estimate" class="btn-go">Write to Estimate →</button>
-      <button id="btn-clear" class="btn-ghost">Clear</button>
+      <button id="btn-clear" class="btn-ghost">Clear Inputs</button>
     </div>
     <div id="status" class="status"></div>
   </div>
@@ -927,15 +928,27 @@ function applySiteOptionDefaults() {
   });
 }
 
-$('btn-clear').addEventListener('click', () => {
+// Shared by the top and bottom "Clear Inputs" buttons. Resets everything
+// on the Input panel: measurements, basement, custom rows, notes, site
+// options back to their defaults, allowance tiers back to Good, the base
+// plan picker, the lender checkbox, and any pending AI Import paste/results.
+// Does not touch an already-generated Estimate/Proposal.
+function clearAllInputs() {
   if (!confirm('Clear all inputs on this form?')) return;
   document.querySelectorAll('.jq-input, .custom-input-name, .custom-input-desc, .custom-input-price, #basement-finished-sf, #basement-finished-desc, #basement-unfinished-sf, #basement-unfinished-desc, #sales-notes').forEach(el => { el.value = ''; });
   document.querySelectorAll('.site-option-select').forEach(el => { el.value = ''; });
   applySiteOptionDefaults();
+  document.querySelectorAll('.web-tier-select[value="good"]').forEach(el => { el.checked = true; });
   $('chk-lender').checked = false;
+  $('plan-select').value = '';
+  selectedBasePlanHouse = null;
+  $('plan-status').classList.add('hidden');
+  $('btn-ai-clear').click();
   localStorage.removeItem(LS_INPUTS_KEY);
   saveInputsToStorage();
-});
+}
+$('btn-clear').addEventListener('click', clearAllInputs);
+$('btn-clear-top').addEventListener('click', clearAllInputs);
 
 // ═══════════════════════════════════════════════════════════
 // Write to Estimate — mirrors index.html's btnConfirm handler,
